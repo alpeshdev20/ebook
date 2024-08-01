@@ -1,0 +1,161 @@
+<?php
+
+namespace App\Http\Controllers\payment;
+
+use App\Http\Controllers\Controller;
+use Illuminate\Http\Request;
+use Indipay;
+use Carbon\Carbon;
+use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Storage;
+use App\Models\Subscription_plan;
+use App\Models\Subscription;
+use App\Models\Subscriber;
+use Illuminate\Support\Facades\Log;
+use App\model\ULogin;
+use Illuminate\Support\Facades\Redirect;
+
+use Validator;
+
+class paymentController extends Controller
+{
+
+   
+    //
+    public function pay(Request $request)
+    {
+    $rules = [
+            'user_id' => 'required',
+            'subscription_id' => 'required',
+        ];
+        
+    
+       
+
+        $error = Validator::make($request->all(), $rules);
+
+        if ($error->fails()) {
+            return response()->json(['status' => 'false', 'error' => $error->errors()->all()], 200);
+        }
+        
+        $plan=Subscription_plan::find($request->subscription_id);
+        $user=ULogin::find($request->user_id);
+        $transaction_id=(string) Str::uuid();
+        $subs=new Subscription();
+        $subs->user_id=$request->user_id;
+        $subs->transaction_id=$transaction_id;
+        $subs->subscription_plan_id=$request->subscription_id;
+        $subs->plan_validity=$plan->validity;
+        $subs->save();
+        $parameters = [
+		'tid' => mt_rand(),
+		'CUST_ID'=>$user->id,
+            'ORDER_ID' => $transaction_id,
+            'TXN_AMOUNT' => number_format((float)$plan->price,2),
+            'billing_name' => $user->name,
+            // 'billing_address' => '',
+            // 'billing_city' => $user_city,
+            // 'billing_state' => '',
+            // 'billing_zip' => '',
+            'billing_country' => 'India',
+            'billing_tel' => $user->mobile,
+            'billing_email' => $user->email
+          ];
+    
+          $order = Indipay::gateway('Paytm')->prepare($parameters);
+          $uuidFileName =  (string) Str::uuid().'.html';
+          $uuidFileName = 'pay/'.$uuidFileName;
+	  $form = Indipay::process($order);
+	 // dd($form->render());
+	  return response($form->render());
+          Storage::disk('public')->put($uuidFileName, $form);
+          $urlPath = url('')."/".$uuidFileName;
+        //   return $urlPath;
+          return response()->json(['status' => '200', 'message' => 'Payment url','order_id' => $transaction_id, 'data' => $urlPath]);
+ 
+
+      
+     
+      
+
+        
+        }
+
+    public function confirmPayment(Request $request)
+    {
+	dd($request);
+        $response = Indipay::gateway('Paytm')->response($request);
+        $order_id = $response['order_id'];
+        $tracking_id = $response['tracking_id'];
+        $bank_ref_no = $response['bank_ref_no'];
+        $order_status = $response['order_status'];
+        $failure_message = $response['failure_message'];
+        $payment_mode = $response['payment_mode'];
+        $card_name = $response['card_name'];
+        $status_code = $response['status_code'];
+        $status_message = $response['status_message'];
+        $currency = $response['currency'];
+        $amount = $response['amount'];
+        Subscription::where('transaction_id',$order_id)
+        ->update([
+            'bank_ref_no'=>$bank_ref_no,
+            'order_status'=>$order_status,
+            'failure_message'=>$failure_message,
+            'payment_mode'=>$payment_mode,
+            'card_name'=>$card_name,
+            'status_code'=>$status_code,
+            'status_message'=>$status_message,
+            'currency'=>$currency,
+            'amount'=>$amount
+        ]);
+      
+        $Subscription_data=Subscription::where('transaction_id',$order_id)->first();
+
+        $Subscription_plan_data=Subscription_plan::find($Subscription_data['subscription_plan_id']);
+        
+        $user=Subscriber::where(['user_id'=>$Subscription_data['user_id'],'status'=>1])->first();
+        if($user){
+            
+            $date=new Carbon($user->plan_end_date);
+            $user->plan_end_date=$date->addDays($Subscription_plan_data->validity)->toDateTimeString();
+            $user->save();
+            
+        }
+        else{
+            $subscriber=[
+                'user_id' => $Subscription_data['user_id'],
+                'subscription_id' => $Subscription_data['subscription_plan_id'],
+                'plan_end_date' => $Date = Carbon::now()->addDays($Subscription_plan_data->validity)->toDateString(),
+                'plan_name' => $Subscription_plan_data->name,
+                'status'=>1
+            ];
+            Subscriber::create($subscriber);
+        }
+        // return response()->json(['status' => '200', 'message' => 'Payment successfull','data'=>$subs]);
+        //return view('payment-status',compact('order_status')); 
+        $url = "https://netbookflix.com/payment-sucess" ;
+                return Redirect::to($url);
+    }
+
+    public function cancelPayment(Request $request)
+    {
+        $response = Indipay::gateway('Paytm')->response($request);
+        $order_id =    $response['order_id'];
+        $tracking_id = $response['tracking_id'];
+        $bank_ref_no = $response['bank_ref_no'];
+        $order_status = $response['order_status'];
+        $failure_message = $response['failure_message'];
+        $payment_mode = $response['payment_mode'];
+        $card_name = $response['card_name'];
+        $status_code = $response['status_code'];
+    
+        $status_message = $response['status_message'];
+        $currency = $response['currency'];
+        $amount = $response['amount'];
+        Subscription::where('transaction_id',$order_id)->update(['bank_ref_no'=>$bank_ref_no,'order_status'=>$order_status,'failure_message'=>$failure_message,'payment_mode'=>$payment_mode,'card_name'=>$card_name,'status_code'=>$status_code,'status_message'=>$status_message,'currency'=>$currency,'amount'=>$amount]);
+        // return response()->json(['status' => '200', 'message' => 'Payment successfull','data'=>$subs]);
+        //        return view('payment-status',compact('order_status')); 
+	    $url = "https://netbookflix.com/payment-failed" ;
+	        return Redirect::to($url);
+    }
+}
